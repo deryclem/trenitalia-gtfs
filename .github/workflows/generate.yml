@@ -1,0 +1,41 @@
+name: Generate GTFS
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"  # Every Monday at 04:00 UTC
+  workflow_dispatch:       # Also allows manual trigger from the GitHub UI
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up badger
+        working-directory: vendor/badger
+        run: |
+          uv venv --python 3.12
+          uv sync
+          sh scripts/generate-schema.sh
+
+      - name: Generate GTFS feed
+        run: uv run --python 3.12 --with-requirements requirements.txt python3 generate.py
+
+      - name: Commit updated feed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gtfs-trenitalia.zip .last_publication_timestamp
+          git diff --cached --quiet || git commit -m "chore: update GTFS feed $(date +'%Y-%m-%d')"
+          git pull --rebase origin main
+          git push
