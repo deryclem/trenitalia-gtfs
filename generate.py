@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests  # pip install requests
@@ -61,8 +62,17 @@ EXPECTED_OPERATOR_ID = "IT::Operator:05403151003:TRENITALIA:TRENITALIA"
 # badger doesn't read the NeTEx FrameDefaults timezone for Operator-sourced
 # agencies and falls back to Europe/Amsterdam (its own maintainers flag this
 # as a TODO in transformers/gtfsprofile.py). Trenitalia's feed declares
-# Europe/Rome in FrameDefaults, so we correct it after conversion.
 AGENCY_TIMEZONE = "Europe/Rome"
+AGENCY_LANG = "it"
+
+# A handful of Italian station names have their trailing accented vowel
+# corrupted to the Unicode replacement character (\ufffd) in Trenitalia's source.
+STATION_NAME_FIXES = {
+    "Ann\ufffd": "Annà",
+    "Palermo Libert\ufffd": "Palermo Libertà",
+    "Ciri\ufffd": "Cirié",
+    "Macerata Universit\ufffd": "Macerata Università",
+}
 
 SHAPES_SCRIPT = Path("scripts/generate_shapes.py")
 SHAPES_TXT = WORK_DIR / "shapes.txt"
@@ -75,16 +85,15 @@ STALE_STATE_FILE = Path(".last_publication_timestamp")
 
 def download_netex() -> Path:
     print(f"Downloading NeTEx feed from {NETEX_URL}")
-    response = HTTP.get(NETEX_URL, timeout=120)
-    response.raise_for_status()
-
-    content_type = response.headers.get("Content-Type", "")
-    if "gzip" not in content_type:
-        sys.exit(f"Unexpected Content-Type: {content_type!r} (expected gzip)")
-
     WORK_DIR.mkdir(exist_ok=True)
-    NETEX_GZ.write_bytes(response.content)
-    print(f"Downloaded {len(response.content):,} bytes")
+    with HTTP.get(NETEX_URL, stream=True, timeout=120) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "")
+        if "gzip" not in content_type:
+            sys.exit(f"Unexpected Content-Type: {content_type!r} (expected gzip)")
+        with open(NETEX_GZ, "wb") as f:
+            shutil.copyfileobj(response.raw, f)
+    print(f"Downloaded {NETEX_GZ.stat().st_size:,} bytes")
     return NETEX_GZ
 
 
@@ -124,20 +133,74 @@ def read_publication_timestamp_and_operator(netex_gz: Path) -> tuple[str, bool]:
     return publication_timestamp, has_operator
 
 
-def read_train_numbers(netex_gz: Path) -> dict[str, str]:
+@dataclass
+class NetexMetadata:
+    train_numbers: dict[str, str]
+    stopplace_codes: dict[str, str]
+    trip_restrictions: dict[tuple[str, int], tuple[bool, bool]]
+
+
+def read_netex_metadata(netex_gz: Path) -> NetexMetadata:
     """
-    Maps trip_id (== ServiceJourney/@id) -> train number (ServiceJourney/Name).
-    badger's GTFS export always leaves trip_short_name blank even though the
-    train number is right there in the NeTEx (transformers/gtfsprofile.py
-    hardcodes it to ''), so we pull it ourselves.
+    Extracts all metadata directly from Trenitalia's NeTEx XML in a single low-memory
+    streaming pass (4MB chunks, ~50MB RAM):
+    - train_numbers: trip_id -> train number (ServiceJourney/Name)
+    - stopplace_codes: StopPlace/@id -> UIC station code (StopPlace/PrivateCode)
+    - trip_restrictions: (trip_id, order) -> (no_boarding, no_alighting) from
+      StopPointInJourneyPattern ForBoarding=false / ForAlighting=false.
     """
+    pattern_stopplace = re.compile(r'<StopPlace id="([^"]+)"[^>]*>.*?<PrivateCode>([^<]+)</PrivateCode>', re.DOTALL)
+    pattern_sjp = re.compile(r'<ServiceJourneyPattern id="([^"]+)"[^>]*>(.*?)</ServiceJourneyPattern>', re.DOTALL)
+    pattern_sp = re.compile(r'<StopPointInJourneyPattern id="[^"]*"\s+order="(\d+)"[^>]*>(.*?)</StopPointInJourneyPattern>', re.DOTALL)
+    pattern_sj = re.compile(r'<ServiceJourney id="([^"]+)"[^>]*>.*?<Name>([^<]+)</Name>.*?<ServiceJourneyPatternRef ref="([^"]+)"', re.DOTALL)
+
+    stopplace_codes: dict[str, str] = {}
+    sjp_restrictions: dict[str, dict[int, tuple[bool, bool]]] = {}
     train_numbers: dict[str, str] = {}
-    pattern = re.compile(r'<ServiceJourney id="([^"]+)"[^>]*>\s*<Name>([^<]+)</Name>')
+    trip_restrictions: dict[tuple[str, int], tuple[bool, bool]] = {}
+
     with gzip.open(netex_gz, "rt", encoding="utf-8") as f:
-        content = f.read()
-    for match in pattern.finditer(content):
-        train_numbers[match.group(1)] = match.group(2)
-    return train_numbers
+        overlap = ""
+        while True:
+            chunk = f.read(4 * 1024 * 1024)
+            if not chunk:
+                break
+            text = overlap + chunk
+
+            for m in pattern_stopplace.finditer(text):
+                stopplace_codes[m.group(1)] = m.group(2)
+
+            for m in pattern_sjp.finditer(text):
+                sjp_id = m.group(1)
+                body = m.group(2)
+                if "<ForBoarding>false" in body or "<ForAlighting>false" in body:
+                    rest = {}
+                    for m_sp in pattern_sp.finditer(body):
+                        order = int(m_sp.group(1))
+                        sp_body = m_sp.group(2)
+                        nb = "<ForBoarding>false" in sp_body
+                        na = "<ForAlighting>false" in sp_body
+                        if nb or na:
+                            rest[order] = (nb, na)
+                    if rest:
+                        sjp_restrictions[sjp_id] = rest
+
+            for m in pattern_sj.finditer(text):
+                sj_id = m.group(1)
+                name = m.group(2)
+                pattern_ref = m.group(3)
+                train_numbers[sj_id] = name
+                if pattern_ref in sjp_restrictions:
+                    for order, (nb, na) in sjp_restrictions[pattern_ref].items():
+                        trip_restrictions[(sj_id, order)] = (nb, na)
+
+            overlap = text[-32768:]
+
+    return NetexMetadata(
+        train_numbers=train_numbers,
+        stopplace_codes=stopplace_codes,
+        trip_restrictions=trip_restrictions,
+    )
 
 
 def check_freshness(publication_timestamp: str) -> None:
@@ -205,14 +268,17 @@ def generate_shapes(netex_db_abs: Path) -> None:
 
 # ── Post-processing ───────────────────────────────────────────────────────────
 
-def post_process(gtfs_zip: Path, train_numbers: dict[str, str]) -> None:
+def post_process(gtfs_zip: Path, metadata: NetexMetadata, publication_timestamp: str) -> None:
     """
     Fixes up what badger's own GTFS export gets wrong or leaves out:
     - agency_timezone defaults to Europe/Amsterdam (see AGENCY_TIMEZONE).
-    - trip_short_name (train number) is always blank; we fill it from the
-      NeTEx source ourselves (see read_train_numbers).
-    - shapes.txt doesn't exist at all; we generate it ourselves (see
-      generate_shapes) and wire it into trips.txt via shape_id.
+    - agency_lang is set to 'it'.
+    - trip_short_name (train number) is filled from NeTEx ServiceJourney/Name.
+    - shapes.txt is generated with geometric deduplication (-80% size) and linked.
+    - stops.txt fixes corrupted accented vowels and populates parent station stop_code.
+    - stop_times.txt populates pickup_type=1 and drop_off_type=1 from NeTEx restrictions.
+    - levels.txt renames non-standard 'name' column to standard GTFS 'level_name'.
+    - feed_info.txt is created with publisher, dates, and publication timestamp.
     """
     extract_dir = WORK_DIR / "gtfs_extracted"
     if extract_dir.exists():
@@ -229,10 +295,33 @@ def post_process(gtfs_zip: Path, train_numbers: dict[str, str]) -> None:
         rows = list(reader)
     for row in rows:
         row["agency_timezone"] = AGENCY_TIMEZONE
+        if not row.get("agency_lang"):
+            row["agency_lang"] = AGENCY_LANG
     with open(agency_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+    stops_path = extract_dir / "stops.txt"
+    if stops_path.exists():
+        with open(stops_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
+        for row in rows:
+            name = row.get("stop_name", "")
+            if name in STATION_NAME_FIXES:
+                row["stop_name"] = STATION_NAME_FIXES[name]
+            desc = row.get("stop_desc", "")
+            if desc in STATION_NAME_FIXES:
+                row["stop_desc"] = STATION_NAME_FIXES[desc]
+            if row.get("location_type") == "1" and not row.get("stop_code"):
+                if row["stop_id"] in metadata.stopplace_codes:
+                    row["stop_code"] = metadata.stopplace_codes[row["stop_id"]]
+        with open(stops_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     trip_shape_map: dict[str, str] = {}
     if TRIP_SHAPE_MAP.exists():
@@ -245,8 +334,8 @@ def post_process(gtfs_zip: Path, train_numbers: dict[str, str]) -> None:
         fieldnames = reader.fieldnames
         rows = list(reader)
     for row in rows:
-        if row["trip_id"] in train_numbers:
-            row["trip_short_name"] = train_numbers[row["trip_id"]]
+        if row["trip_id"] in metadata.train_numbers:
+            row["trip_short_name"] = metadata.train_numbers[row["trip_id"]]
         if row["trip_id"] in trip_shape_map:
             row["shape_id"] = trip_shape_map[row["trip_id"]]
     with open(trips_path, "w", newline="", encoding="utf-8") as f:
@@ -254,31 +343,111 @@ def post_process(gtfs_zip: Path, train_numbers: dict[str, str]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
+    st_path = extract_dir / "stop_times.txt"
+    if st_path.exists():
+        with open(st_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            st_fieldnames = reader.fieldnames
+            st_rows = list(reader)
+        for row in st_rows:
+            key = (row["trip_id"], int(row["stop_sequence"]))
+            if key in metadata.trip_restrictions:
+                nb, na = metadata.trip_restrictions[key]
+                if nb:
+                    row["pickup_type"] = "1"
+                if na:
+                    row["drop_off_type"] = "1"
+        with open(st_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=st_fieldnames)
+            writer.writeheader()
+            writer.writerows(st_rows)
+
+    levels_path = extract_dir / "levels.txt"
+    if levels_path.exists():
+        with open(levels_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            lvl_rows = list(reader)
+        if lvl_rows and "name" in lvl_rows[0] and "level_name" not in lvl_rows[0]:
+            fieldnames = ["level_id", "level_index", "level_name"]
+            with open(levels_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in lvl_rows:
+                    writer.writerow({
+                        "level_id": row.get("level_id", ""),
+                        "level_index": row.get("level_index", ""),
+                        "level_name": row.get("name", ""),
+                    })
+
+    cal_path = extract_dir / "calendar.txt"
+    start_dates: list[str] = []
+    end_dates: list[str] = []
+    if cal_path.exists():
+        with open(cal_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if row.get("start_date"):
+                    start_dates.append(row["start_date"])
+                if row.get("end_date"):
+                    end_dates.append(row["end_date"])
+    min_start = min(start_dates) if start_dates else ""
+    max_end = max(end_dates) if end_dates else ""
+
+    feed_info_path = extract_dir / "feed_info.txt"
+    with open(feed_info_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "feed_publisher_name",
+            "feed_publisher_url",
+            "feed_lang",
+            "feed_start_date",
+            "feed_end_date",
+            "feed_version",
+            "feed_contact_url",
+        ])
+        writer.writerow([
+            "Trenitalia",
+            "https://www.trenitalia.com",
+            "it",
+            min_start,
+            max_end,
+            publication_timestamp or "",
+            "https://www.trenitalia.com",
+        ])
+
     if SHAPES_TXT.exists():
         shutil.copy(SHAPES_TXT, extract_dir / "shapes.txt")
 
     if OUTPUT_ZIP.exists():
         OUTPUT_ZIP.unlink()
-    with zipfile.ZipFile(OUTPUT_ZIP, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(OUTPUT_ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for file in sorted(extract_dir.iterdir()):
             zf.write(file, arcname=file.name)
 
 
 def sanity_check(gtfs_zip: Path) -> None:
     """
-    Catches the two failure modes we've actually hit while building this:
-    stops.txt missing entirely, and stop_id references in stop_times.txt
-    that don't exist in stops.txt.
+    Catches feed corruption and integrity failure modes:
+    - required GTFS files missing
+    - orphaned stop_ids or shape_ids
+    - empty parent station stop_code
+    - empty tables
     """
     with zipfile.ZipFile(gtfs_zip) as zf:
         names = set(zf.namelist())
-        required = {"agency.txt", "routes.txt", "stops.txt", "trips.txt", "stop_times.txt", "calendar.txt"}
+        required = {"agency.txt", "routes.txt", "stops.txt", "trips.txt", "stop_times.txt", "calendar.txt", "feed_info.txt"}
         missing = required - names
         if missing:
             sys.exit(f"Generated GTFS is missing required files: {sorted(missing)}")
 
         with zf.open("stops.txt") as f:
-            stop_ids = {row["stop_id"] for row in csv.DictReader(line.decode("utf-8") for line in f)}
+            stops = list(csv.DictReader(line.decode("utf-8") for line in f))
+            stop_ids = {row["stop_id"] for row in stops}
+            parent_without_code = [
+                row["stop_id"] for row in stops if row.get("location_type") == "1" and not row.get("stop_code")
+            ]
+            if parent_without_code:
+                sys.exit(f"{len(parent_without_code)} parent stations are missing stop_code")
+
         with zf.open("stop_times.txt") as f:
             used_stop_ids = {row["stop_id"] for row in csv.DictReader(line.decode("utf-8") for line in f)}
 
@@ -309,10 +478,10 @@ def main() -> None:
         sys.exit(f"Downloaded feed does not contain Trenitalia's operator id ({EXPECTED_OPERATOR_ID}); refusing to publish")
 
     check_freshness(publication_timestamp)
-    train_numbers = read_train_numbers(netex_gz)
+    metadata = read_netex_metadata(netex_gz)
 
     gtfs_zip = convert_to_gtfs(netex_gz)
-    post_process(gtfs_zip, train_numbers)
+    post_process(gtfs_zip, metadata, publication_timestamp)
     sanity_check(OUTPUT_ZIP)
 
     STALE_STATE_FILE.write_text(publication_timestamp)

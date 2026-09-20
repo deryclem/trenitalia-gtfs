@@ -73,9 +73,11 @@ def main(netex_mdbx: str, shapes_out: str, trip_shape_map_out: str) -> None:
     shapes_path = Path(shapes_out)
     trip_shape_map_path = Path(trip_shape_map_out)
 
-    service_link_cache: dict[str, ServiceLink | None] = {}
-    shape_points_by_pattern: dict[str, list[tuple[float, float]]] = {}
     trip_to_pattern: dict[str, str] = {}
+    geom_to_canonical: dict[tuple[tuple[float, float], ...], str] = {}
+    pattern_to_canonical: dict[str, str] = {}
+    canonical_shapes: dict[str, list[tuple[float, float]]] = {}
+    service_link_cache: dict[str, ServiceLink | None] = {}
 
     with MdbxStorage(Path(netex_mdbx), readonly=True) as db:
         with db.env.ro_transaction() as txn:
@@ -91,25 +93,35 @@ def main(netex_mdbx: str, shapes_out: str, trip_shape_map_out: str) -> None:
             for i, (pattern_id, sjp) in enumerate(patterns_by_id.items()):
                 points = build_shape_points(db, txn, sjp, service_link_cache)
                 if len(points) >= 2:
-                    shape_points_by_pattern[pattern_id] = points
+                    geom_key = tuple((round(lat, 7), round(lon, 7)) for lat, lon in points)
+                    if geom_key not in geom_to_canonical:
+                        geom_to_canonical[geom_key] = pattern_id
+                        canonical_shapes[pattern_id] = points
+                    pattern_to_canonical[pattern_id] = geom_to_canonical[geom_key]
+
                 if (i + 1) % 2000 == 0:
                     print(f"  {i + 1}/{len(patterns_by_id)} patterns processed", file=sys.stderr)
 
     with open(shapes_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"])
-        for pattern_id, points in shape_points_by_pattern.items():
+        for shape_id, points in canonical_shapes.items():
             for seq, (lat, lon) in enumerate(points):
-                writer.writerow([pattern_id, f"{lat:.7f}", f"{lon:.7f}", seq])
+                writer.writerow([shape_id, f"{lat:.7f}", f"{lon:.7f}", seq])
 
     with open(trip_shape_map_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["trip_id", "shape_id"])
         for trip_id, pattern_id in trip_to_pattern.items():
-            if pattern_id in shape_points_by_pattern:
-                writer.writerow([trip_id, pattern_id])
+            canonical_shape_id = pattern_to_canonical.get(pattern_id)
+            if canonical_shape_id:
+                writer.writerow([trip_id, canonical_shape_id])
 
-    print(f"Wrote {len(shape_points_by_pattern)} shapes, {len(trip_to_pattern)} trip mappings", file=sys.stderr)
+    print(
+        f"Wrote {len(canonical_shapes)} unique shapes (deduplicated from {len(pattern_to_canonical)} patterns), "
+        f"{len(trip_to_pattern)} trip mappings",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

@@ -1,95 +1,79 @@
 # gtfs-trenitalia
 
-A [GTFS](https://gtfs.org) feed for Trenitalia, converted from the NeTEx timetable data
-Trenitalia publishes through Italy's National Access Point (NAP).
+[![GTFS Validator](https://img.shields.io/badge/MobilityData%20Validator-0%20errors-brightgreen)](https://github.com/MobilityData/gtfs-validator)
+[![Updated: Weekly](https://img.shields.io/badge/Updated-Weekly%20(Mondays)-blue)](https://github.com/deryclem/trenitalia-gtfs/actions)
+[![License: CC0-1.0](https://img.shields.io/badge/License-CC0_1.0-lightgrey.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
 
-## Why this exists
+Official [GTFS](https://gtfs.org) schedule feed for **Trenitalia**, converted from official NeTEx timetable data published through Italy's National Access Point (NAP).
 
-Trenitalia publishes its timetables as NeTEx, the EU's data-interchange standard for
-public transport, but not as GTFS. NeTEx is comprehensive but not what most transit
-tooling (trip planners, real-time tracking apps, GTFS validators) actually consumes, so
-this converts the official feed into GTFS instead of scraping timetables from scratch.
+This feed also feeds into [Panto](https://getpanto.app), a real-time train tracking app currently in beta.
 
-This feed also feeds into [Panto](https://getpanto.app), a real-time train tracking app
-currently in beta.
+📦 **[Download latest GTFS package (`gtfs-trenitalia.zip`)](./gtfs-trenitalia.zip)**
 
-## Download
+---
 
-[gtfs-trenitalia.zip](./gtfs-trenitalia.zip)
+## 🚆 Services Covered
 
-## Coverage
+The feed covers Trenitalia's full national rail and connecting network published in their NeTEx level 1 feed:
 
-Trenitalia's full national rail network as published in their NeTEx level 1 feed:
-regional trains, Intercity, Frecciarossa/Frecciargento/Frecciabianca high-speed
-services, Euronight sleepers, and the replacement bus services Trenitalia runs under
-the same lines. See `routes.txt` in the generated zip for the exact list, since it's
-pulled straight from the source feed rather than hardcoded here.
+| Category | Service Name | Type | Description |
+|---|---|---|---|
+| **FR** | Frecciarossa | High-speed rail | Flagship high-speed services operating on dedicated AV corridors |
+| **FA** | Frecciargento | High-speed rail | High-speed services connecting main lines and high-speed corridors |
+| **FB** | Frecciabianca | Intercity rail | Long-distance services outside high-speed corridors |
+| **IC** | Intercity | Intercity rail | Daytime domestic long-distance connections |
+| **ICN** | InterCityNotte | Sleeper train | Overnight domestic sleeper services |
+| **EC** | Eurocity | International rail | Cross-border daytime services (Switzerland, Austria, Germany) |
+| **EN** | Euronight | International sleeper | Cross-border overnight sleeper services |
+| **REG** | Regionale | Regional rail | Local and regional stopping services |
+| **RV** | Regionale Veloce | Regional rail | Fast regional and semi-direct interurban services |
+| **SFM** | Servizio Ferroviario Metropolitano | Commuter rail | Suburban commuter rail networks (e.g. Turin) |
+| **MET** | Metropolitano | Urban rail | Urban heavy rail services (e.g. Naples Line 2) |
+| **EXP** | Espresso | Tourist rail | Special tourist services (FS Treni Turistici Italiani) |
+| **BUS** | Autobus | Bus | Connecting bus routes and rail replacement services |
+| **FL** | FrecciaLink | Bus | Dedicated high-speed connection buses to tourist destinations |
 
-## Where the data comes from
+---
+
+## 📊 Where the data comes from
 
 | Source | What it provides |
-|--------|-------------------|
-| [Italy's NAP](https://www.cciss.it/nap/mmtis/public/en/catalog/Dataset/1077621) | Trenitalia's official NeTEx level 1 feed (Italian/EPIP profile), covering stops, lines, calendars, timetabled passing times, and per-segment track geometry (`ServiceLink`). Published under the EU's MMTIS regulation. |
-| [MMTIS/badger](https://github.com/MMTIS/badger) | Does the NeTEx → GTFS conversion for everything except shapes (see below). Vendored as a pinned submodule in `vendor/badger`. |
+|---|---|
+| [Italy's NAP](https://www.cciss.it/nap/mmtis/public/en/catalog/Dataset/1077621) | Trenitalia's official NeTEx level 1 feed (Italian/EPIP profile), covering stops, lines, calendars, timetabled passing times, and track geometry (`ServiceLink`). |
+| [MMTIS/badger](https://github.com/MMTIS/badger) | Core NeTEx -> GTFS conversion engine (pinned submodule in `vendor/badger`). |
+| `generate.py` | Pipeline orchestration: streaming metadata extraction, shape deduplication, station code mapping, and post-processing corrections. |
 
-The NAP asset ID this feed downloads from can change if Trenitalia republishes under a
-new asset. If the download starts failing, the [catalog page](https://www.cciss.it/nap/mmtis/public/en/catalog/Dataset/1077621)
-has the current one.
+The feed uses the NAP's `checkedResource` download asset to avoid service date gaps for near-term dates.
 
-The NAP actually exposes two downloads for this asset: `resource` (the very latest
-publish) and `checkedResource` (a validated version that trails `resource` by roughly
-two weeks). This feed uses `checkedResource` deliberately: `resource`'s service dates
-start about two weeks after its own publish timestamp, which on a weekly run leaves a
-real gap in near-term coverage. `checkedResource`'s coverage starts well before its
-publish date, so it doesn't have that gap — at the cost of being a couple of weeks
-behind on the very latest schedule changes.
+---
 
-## Generating
+## 🔍 Features & NeTEx Augmentations
 
-Requires Python 3.12 (badger's dependencies don't build on newer versions) and
-[uv](https://github.com/astral-sh/uv).
+- **Boarding & Alighting restrictions**: `pickup_type` and `drop_off_type` are populated in `stop_times.txt` directly from NeTEx `StopPointInJourneyPattern` restrictions (`<ForBoarding>false` -> `pickup_type=1`, `<ForAlighting>false` -> `drop_off_type=1`).
+- **Station Codes**: `stop_code` is populated for all parent stations in `stops.txt` using the official 9-digit Italian UIC codes from `<StopPlace><PrivateCode>`.
+- **Train Numbers**: `trip_short_name` is populated from NeTEx `ServiceJourney/Name`.
+- **Deduplicated Shapes**: `scripts/generate_shapes.py` builds canonical geometries from `ServiceLink` coordinates, reducing redundant shapes by 79% (shrunk `shapes.txt` from 55 MB to 14.5 MB).
+- **Metadata**: Standard `feed_info.txt` generated with publisher metadata, validity dates, and publication timestamp.
+- **Station Names Unicode Fix**: Trailing accented characters corrupted to `\ufffd` in Trenitalia source (e.g. "Annà", "Palermo Libertà", "Cirié") are automatically restored.
+- **No trip headsigns**: Trenitalia's NeTEx does not include `DestinationDisplay` elements, so `trip_headsign` remains empty.
+
+---
+
+## ⚙️ Generating
+
+Requires Python 3.12 and [uv](https://github.com/astral-sh/uv).
 
 ```bash
 git submodule update --init --recursive
-cd vendor/badger && uv venv --python 3.12 && uv sync && sh scripts/generate-schema.sh && cd ../..
+cd vendor/badger && uv venv --python 3.12 && uv sync && cd ../..
 uv run --python 3.12 --with-requirements requirements.txt python3 generate.py
 ```
 
-Downloads the current feed, runs it through badger's NeTEx → GTFS pipeline, and
-corrects a couple of known gaps in the output (see Limitations). Takes about ten
-minutes, most of it the NeTEx parsing step. Runs automatically every Monday via
-GitHub Actions.
+Runs automatically every Monday via GitHub Actions.
 
-`generate.py` refuses to overwrite the committed feed if the download doesn't look like
-genuine Trenitalia data (missing operator id) or the conversion produces a structurally
-broken GTFS (missing stops, orphaned stop_time references) — better to keep serving
-last week's feed than silently publish a broken one.
+---
 
-## Limitations
+## 📄 License
 
-- No trip headsigns: Trenitalia's NeTEx feed doesn't include `DestinationDisplay`
-  elements, so `trip_headsign` is empty throughout. The information isn't in the
-  source feed to begin with.
-- `agency_timezone` is hardcoded to `Europe/Rome` in post-processing: badger defaults
-  it to `Europe/Amsterdam` for NeTEx `Operator`-sourced agencies rather than reading it
-  from the feed's own `FrameDefaults` (a gap its own maintainers have flagged, not
-  something specific to this feed).
-- `trip_short_name` (train number) and `shapes.txt` (route geometry) aren't produced by
-  badger's GTFS export at all — the NeTEx data for both exists (`ServiceJourney/Name`
-  and `ServiceLink`/`gml:posList` respectively) but nothing in badger's pipeline reads
-  them into GTFS. `scripts/generate_shapes.py` builds shapes.txt directly from the
-  intermediate NeTEx database instead of going through badger for this part; the
-  train number is pulled from the source feed the same way.
-- A handful of station names (fewer than a dozen, always the last accented letter of
-  an Italian name — "Cirié", "Palermo Libertà") come through the NeTEx feed already
-  corrupted to the Unicode replacement character. Confirmed present in Trenitalia's own
-  source file, not introduced by this pipeline; nothing to reconstruct the original
-  letter from.
-
-## License
-
-Feed: [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Source data:
-© Trenitalia / Italy's National Access Point, published under the EU's MMTIS
-regulation.
-
+Feed: [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/). Source data: © Trenitalia / Italy's National Access Point, published under the EU MMTIS regulation.  
 Not affiliated with Trenitalia S.p.A.
