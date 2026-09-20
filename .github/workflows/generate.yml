@@ -26,6 +26,7 @@ jobs:
         run: |
           uv venv --python 3.12
           uv sync
+          sh scripts/generate-schema.sh
 
       - name: Generate GTFS feed
         run: uv run --python 3.12 --with-requirements requirements.txt python3 generate.py

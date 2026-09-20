@@ -65,7 +65,7 @@ Requires Python 3.12 and [uv](https://github.com/astral-sh/uv).
 
 ```bash
 git submodule update --init --recursive
-cd vendor/badger && uv venv --python 3.12 && uv sync && cd ../..
+cd vendor/badger && uv venv --python 3.12 && uv sync && sh scripts/generate-schema.sh && cd ../..
 uv run --python 3.12 --with-requirements requirements.txt python3 generate.py
 ```
 
