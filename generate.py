@@ -402,16 +402,45 @@ def post_process(gtfs_zip: Path, metadata: NetexMetadata, publication_timestamp:
             "feed_start_date",
             "feed_end_date",
             "feed_version",
+            "feed_license_url",
             "feed_contact_url",
+            "feed_contact_email",
         ])
         writer.writerow([
-            "Trenitalia",
-            "https://www.trenitalia.com",
+            "Clément Desouche (@deryclem) (via data from Trenitalia / CCISS MMTIS)",
+            "https://github.com/deryclem/trenitalia-gtfs",
             "it",
             min_start,
             max_end,
             publication_timestamp or "",
-            "https://www.trenitalia.com",
+            "https://creativecommons.org/licenses/by/4.0/",
+            "https://github.com/deryclem/trenitalia-gtfs",
+            "cdesouche28@gmail.com",
+        ])
+
+    attributions_path = extract_dir / "attributions.txt"
+    with open(attributions_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "attribution_id",
+            "organization_name",
+            "is_producer",
+            "is_operator",
+            "attribution_url",
+        ])
+        writer.writerow([
+            "source-data",
+            "Trenitalia S.p.A. / CCISS MMTIS",
+            "1",
+            "1",
+            "https://www.cciss.it/nap/mmtis/public/en/catalog/Dataset/1077621",
+        ])
+        writer.writerow([
+            "converter",
+            "Clément Desouche (@deryclem)",
+            "0",
+            "0",
+            "https://github.com/deryclem/trenitalia-gtfs",
         ])
 
     if SHAPES_TXT.exists():

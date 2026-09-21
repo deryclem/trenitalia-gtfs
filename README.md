@@ -2,7 +2,7 @@
 
 [![GTFS Validator](https://img.shields.io/badge/MobilityData%20Validator-0%20errors-brightgreen)](https://github.com/MobilityData/gtfs-validator)
 [![Updated: Weekly](https://img.shields.io/badge/Updated-Weekly%20(Mondays)-blue)](https://github.com/deryclem/trenitalia-gtfs/actions)
-[![License: CC0-1.0](https://img.shields.io/badge/License-CC0_1.0-lightgrey.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
+[![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-blue.svg)](https://creativecommons.org/licenses/by/4.0/)
 
 Official [GTFS](https://gtfs.org) schedule feed for **Trenitalia**, converted from official NeTEx timetable data published through Italy's National Access Point (NAP).
 
@@ -73,7 +73,8 @@ Runs automatically every Monday via GitHub Actions.
 
 ---
 
-## 📄 License
+## 📄 License & Attribution
 
-Feed: [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/). Source data: © Trenitalia / Italy's National Access Point, published under the EU MMTIS regulation.  
-Not affiliated with Trenitalia S.p.A.
+This GTFS dataset and generator code are licensed under the **[Creative Commons Attribution 4.0 International License (CC-BY-4.0)](https://creativecommons.org/licenses/by/4.0/)** © 2026 Clément Desouche ([@deryclem](https://github.com/deryclem)).
+
+Adapted from official raw NeTEx data published by Trenitalia S.p.A. via Italy's National Access Point (CCISS / Ministry of Infrastructure and Transport) under Italian CAD art. 52 and EU Regulation 2017/1926. Not affiliated with Trenitalia S.p.A.
