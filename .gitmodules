@@ -1,4 +1,4 @@
 [submodule "vendor/badger"]
 	path = vendor/badger
-	url = https://github.com/MMTIS/badger.git
-	branch = binary_relation_serializer
+	url = https://github.com/deryclem/badger.git
+	branch = fix-daytype-valid-day-bits
