@@ -17,11 +17,13 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import requests  # pip install requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -86,13 +88,21 @@ STALE_STATE_FILE = Path(".last_publication_timestamp")
 def download_netex() -> Path:
     print(f"Downloading NeTEx feed from {NETEX_URL}")
     WORK_DIR.mkdir(exist_ok=True)
-    with HTTP.get(NETEX_URL, stream=True, timeout=120) as response:
-        response.raise_for_status()
-        content_type = response.headers.get("Content-Type", "")
-        if "gzip" not in content_type:
-            sys.exit(f"Unexpected Content-Type: {content_type!r} (expected gzip)")
-        with open(NETEX_GZ, "wb") as f:
-            shutil.copyfileobj(response.raw, f)
+    for attempt in range(1, 4):
+        try:
+            with HTTP.get(NETEX_URL, stream=True, timeout=120) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "")
+                if "gzip" not in content_type:
+                    sys.exit(f"Unexpected Content-Type: {content_type!r} (expected gzip)")
+                with open(NETEX_GZ, "wb") as f:
+                    shutil.copyfileobj(response.raw, f)
+            break
+        except (requests.RequestException, urllib3.exceptions.HTTPError) as e:
+            if attempt == 3:
+                raise
+            print(f"Download failed ({e}), retrying ({attempt}/3)")
+            time.sleep(30 * attempt)
     print(f"Downloaded {NETEX_GZ.stat().st_size:,} bytes")
     return NETEX_GZ
 
