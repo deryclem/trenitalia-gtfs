@@ -88,7 +88,11 @@ STALE_STATE_FILE = Path(".last_publication_timestamp")
 def download_netex() -> Path:
     print(f"Downloading NeTEx feed from {NETEX_URL}")
     WORK_DIR.mkdir(exist_ok=True)
-    for attempt in range(1, 4):
+    # The server streams the file chunked without Content-Length and ignores
+    # Range requests, so a truncated download can't be resumed or detected by
+    # size: retry from scratch and verify the gzip stream is complete.
+    max_attempts = 6
+    for attempt in range(1, max_attempts + 1):
         try:
             with HTTP.get(NETEX_URL, stream=True, timeout=120) as response:
                 response.raise_for_status()
@@ -97,12 +101,17 @@ def download_netex() -> Path:
                     sys.exit(f"Unexpected Content-Type: {content_type!r} (expected gzip)")
                 with open(NETEX_GZ, "wb") as f:
                     shutil.copyfileobj(response.raw, f)
+            with gzip.open(NETEX_GZ, "rb") as f:
+                while f.read(1 << 20):
+                    pass
             break
-        except (requests.RequestException, urllib3.exceptions.HTTPError) as e:
-            if attempt == 3:
+        except (requests.RequestException, urllib3.exceptions.HTTPError,
+                EOFError, OSError) as e:
+            if attempt == max_attempts:
                 raise
-            print(f"Download failed ({e}), retrying ({attempt}/3)")
-            time.sleep(30 * attempt)
+            wait = 30 * 2 ** (attempt - 1)
+            print(f"Download failed ({e}), retrying in {wait}s ({attempt}/{max_attempts})")
+            time.sleep(wait)
     print(f"Downloaded {NETEX_GZ.stat().st_size:,} bytes")
     return NETEX_GZ
 
